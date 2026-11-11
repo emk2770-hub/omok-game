@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>오목 게임 - 사람 vs 컴퓨터</title>
+<style>
+  :root { color-scheme: light; --wood:#e8bd79; --line:#68451f; --accent:#276749; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:20px 12px 32px; font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif; background:#f5f2eb; color:#252525; }
+  .wrap { width:min(100%,760px); margin:auto; }
+  h1 { margin:0 0 8px; text-align:center; font-size:clamp(24px,5vw,34px); }
+  .sub { text-align:center; color:#666; margin:0 0 16px; font-size:14px; }
+  .panel { display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:10px; margin-bottom:12px; }
+  #status { background:white; border:1px solid #ddd; border-radius:12px; padding:11px 16px; text-align:center; font-weight:700; min-width:220px; }
+  .turn-dot { display:inline-block; width:13px; height:13px; border-radius:50%; vertical-align:-2px; margin-right:6px; border:1px solid #555; }
+  button { border:0; border-radius:10px; padding:11px 16px; font-size:15px; font-weight:700; cursor:pointer; background:#276749; color:white; }
+  button.secondary { background:#5b6470; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .board-frame { width:min(94vw,650px); margin:0 auto; padding:10px; background:#d7a65f; border:1px solid #bd8d4c; border-radius:12px; box-shadow:0 5px 15px #0002; }
+  canvas { display:block; width:100%; height:auto; touch-action:manipulation; cursor:pointer; border-radius:5px; }
+  .help { max-width:650px; margin:14px auto 0; padding:12px 15px; background:#fff; border-radius:10px; color:#555; font-size:13px; line-height:1.6; }
+  @media (max-width:480px) { body { padding:15px 7px 24px; } .board-frame { padding:6px; } button { padding:10px 13px; } #status { width:100%; } }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <h1>오목 게임</h1>
+  <p class="sub">사람(검은 돌) vs 컴퓨터(흰 돌) · 15 × 15</p>
+  <div class="panel">
+    <div id="status" aria-live="polite">검은 돌(사람)의 차례입니다.</div>
+    <button id="restart">새 게임</button>
+    <button id="undo" class="secondary" disabled>한 수 무르기</button>
+  </div>
+  <div class="board-frame"><canvas id="board" width="640" height="640" aria-label="15 곱하기 15 오목 바둑판"></canvas></div>
+  <div class="help">
+    <b>게임 방법</b><br>
+    바둑판의 교차점을 누르면 검은 돌을 놓습니다. 컴퓨터가 흰 돌로 응수합니다.
+    가로·세로·대각선 중 어느 한 방향으로 먼저 5개 이상을 연결하면 승리합니다.
+    <br>※ 한 수 무르기는 사람과 컴퓨터의 직전 수를 함께 되돌립니다.
+  </div>
+</main>
+<script>
+(() => {
+  "use strict";
+  const N = 15, EMPTY = 0, BLACK = 1, WHITE = 2;
+  const canvas = document.getElementById("board");
+  const ctx = canvas.getContext("2d");
+  const statusEl = document.getElementById("status");
+  const undoBtn = document.getElementById("undo");
+  const restartBtn = document.getElementById("restart");
+  const pad = 24, step = (canvas.width - pad * 2) / (N - 1);
+  let board, moves, gameOver, thinking, lastMove;
+
+  function reset() {
+    board = Array.from({length:N}, () => Array(N).fill(EMPTY));
+    moves = []; gameOver = false; thinking = false; lastMove = null;
+    setStatus("검은 돌(사람)의 차례입니다.", BLACK);
+    undoBtn.disabled = true; draw();
+  }
+  function setStatus(message, color=0) {
+    const dot = color ? `<span class="turn-dot" style="background:${color===BLACK ? '#171717' : '#fff'}"></span>` : "";
+    statusEl.innerHTML = dot + message;
+  }
+  function xy(r,c) { return {x:pad+c*step, y:pad+r*step}; }
+  function draw() {
+    ctx.clearRect(0,0,640,640);
+    ctx.fillStyle = "#e8bd79"; ctx.fillRect(0,0,640,640);
+    ctx.strokeStyle = "#68451f"; ctx.lineWidth = 1.15;
+    for(let i=0;i<N;i++){
+      const p=pad+i*step;
+      ctx.beginPath(); ctx.moveTo(pad,p); ctx.lineTo(640-pad,p); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p,pad); ctx.lineTo(p,640-pad); ctx.stroke();
+    }
+    [3,7,11].forEach(r => [3,7,11].forEach(c => {
+      const p=xy(r,c); ctx.beginPath(); ctx.arc(p.x,p.y,3.2,0,Math.PI*2); ctx.fillStyle="#68451f"; ctx.fill();
+    }));
+    for(let r=0;r<N;r++) for(let c=0;c<N;c++) if(board[r][c]) drawStone(r,c,board[r][c]);
+    if(lastMove){
+      const p=xy(lastMove.r,lastMove.c);
+      ctx.strokeStyle="#e53935"; ctx.lineWidth=2;
+      ctx.strokeRect(p.x-5,p.y-5,10,10);
+    }
+  }
+  function drawStone(r,c,color) {
+    const p=xy(r,c), grad=ctx.createRadialGradient(p.x-5,p.y-6,2,p.x,p.y,step*.43);
+    if(color===BLACK){ grad.addColorStop(0,"#666"); grad.addColorStop(.35,"#222"); grad.addColorStop(1,"#050505"); }
+    else { grad.addColorStop(0,"#fff"); grad.addColorStop(.7,"#f5f5f5"); grad.addColorStop(1,"#aaa"); }
+    ctx.beginPath(); ctx.arc(p.x,p.y,step*.43,0,Math.PI*2); ctx.fillStyle=grad; ctx.fill();
+    ctx.strokeStyle=color===BLACK?"#000":"#888"; ctx.lineWidth=.7; ctx.stroke();
+  }
+  function inside(r,c){return r>=0&&r<N&&c>=0&&c<N;}
+  const dirs=[[0,1],[1,0],[1,1],[1,-1]];
+  function countLine(r,c,color,dr,dc){
+    let count=1;
+    for(let s of [-1,1]){let rr=r+dr*s,cc=c+dc*s;while(inside(rr,cc)&&board[rr][cc]===color){count++;rr+=dr*s;cc+=dc*s;}}
+    return count;
+  }
+  function won(r,c,color){return dirs.some(([dr,dc])=>countLine(r,c,color,dr,dc)>=5);}
+  function place(r,c,color){
+    if(!inside(r,c)||board[r][c]!==EMPTY||gameOver)return false;
+    board[r][c]=color; moves.push({r,c,color}); lastMove={r,c}; draw(); undoBtn.disabled=false;
+    if(won(r,c,color)){
+      gameOver=true;
+      setStatus(color===BLACK?"승리하셨습니다! 검은 돌이 5개를 연결했습니다.":"컴퓨터가 이겼습니다. 다음 판에 도전해 보세요!",color);
+      return true;
+    }
+    if(moves.length===N*N){gameOver=true;setStatus("무승부입니다.");}
+    return true;
+  }
+  function candidates(){
+    const set=new Map();
+    if(moves.length===0)return [{r:7,c:7}];
+    for(const m of moves) for(let dr=-2;dr<=2;dr++) for(let dc=-2;dc<=2;dc++){
+      const r=m.r+dr,c=m.c+dc;
+      if(inside(r,c)&&board[r][c]===EMPTY)set.set(r+","+c,{r,c});
+    }
+    return [...set.values()];
+  }
+  function lineScore(r,c,color,dr,dc){
+    let own=1, open=0;
+    for(let s of [-1,1]){
+      let rr=r+dr*s,cc=c+dc*s;
+      while(inside(rr,cc)&&board[rr][cc]===color){own++;rr+=dr*s;cc+=dc*s;}
+      if(inside(rr,cc)&&board[rr][cc]===EMPTY)open++;
+    }
+    if(own>=5)return 10000000;
+    if(own===4&&open===2)return 180000;
+    if(own===4&&open===1)return 45000;
+    if(own===3&&open===2)return 9000;
+    if(own===3&&open===1)return 1200;
+    if(own===2&&open===2)return 500;
+    if(own===2&&open===1)return 80;
+    return own*8;
+  }
+  function scoreMove(r,c,color){
+    let score=0;
+    for(const [dr,dc] of dirs) score+=lineScore(r,c,color,dr,dc);
+    const center=7-(Math.abs(7-r)+Math.abs(7-c))*0.15;
+    return score+center;
+  }
+  function computerMove(){
+    if(gameOver)return;
+    thinking=true; setStatus("컴퓨터가 생각하고 있습니다…",WHITE);
+    // 브라우저가 상태 문구를 먼저 그릴 수 있도록 다음 프레임에 계산
+    setTimeout(()=>{
+      const opts=candidates(); let best=null,bestScore=-Infinity;
+      for(const p of opts){
+        board[p.r][p.c]=WHITE;
+        const attack=scoreMove(p.r,p.c,WHITE);
+        board[p.r][p.c]=EMPTY;
+        board[p.r][p.c]=BLACK;
+        const defend=scoreMove(p.r,p.c,BLACK);
+        board[p.r][p.c]=EMPTY;
+        const score=attack+defend*1.12;
+        if(score>bestScore){bestScore=score;best=p;}
+      }
+      thinking=false;
+      if(best){
+        place(best.r,best.c,WHITE);
+        if(!gameOver)setStatus("검은 돌(사람)의 차례입니다.",BLACK);
+      }
+    },180);
+  }
+  function humanMove(r,c){
+    if(gameOver||thinking||board[r][c]!==EMPTY)return;
+    if(place(r,c,BLACK)&&!gameOver)computerMove();
+  }
+  canvas.addEventListener("click",e=>{
+    const rect=canvas.getBoundingClientRect();
+    const scale=canvas.width/rect.width;
+    const x=(e.clientX-rect.left)*scale, y=(e.clientY-rect.top)*scale;
+    const c=Math.round((x-pad)/step), r=Math.round((y-pad)/step);
+    if(!inside(r,c))return;
+    const p=xy(r,c);
+    if(Math.hypot(p.x-x,p.y-y)<step*.48)humanMove(r,c);
+  });
+  restartBtn.addEventListener("click",reset);
+  undoBtn.addEventListener("click",()=>{
+    if(thinking||moves.length===0)return;
+    // 사람의 수와 컴퓨터의 응수를 한 쌍으로 되돌림
+    const removeCount=moves[moves.length-1].color===WHITE?2:1;
+    for(let i=0;i<removeCount&&moves.length;i++){
+      const m=moves.pop(); board[m.r][m.c]=EMPTY;
+    }
+    gameOver=false; lastMove=moves.length?{r:moves[moves.length-1].r,c:moves[moves.length-1].c}:null;
+    setStatus("검은 돌(사람)의 차례입니다.",BLACK);
+    undoBtn.disabled=moves.length===0; draw();
+  });
+  reset();
+})();
+</script>
+</body>
+</html>
